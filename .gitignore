@@ -1,0 +1,22 @@
+# SwiftPM
+.build/
+.swiftpm/
+
+# Assembled app (rebuilt by ./build-app.sh)
+EnigmaM10.app/
+
+# Xcode (if opened as a package)
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editors
+*~
+*.swp
+.idea/
