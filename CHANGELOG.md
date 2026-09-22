@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.5.0
+
+- New writes are **ENIGMAM10 v7** / **M10PW04**. Base-512 uses ~20 notches per rotor.
+- v6 Base-512 keeps the original 1–2-notch machine. Decrypt of v6 Base-512 tries 1–2 first, then ~20 (1.4.2 files written as v6).
+
+## 1.4.2
+
+- Base-512 rotors use ~20 notches (~1/26 turnover) so carry-cascade reaches the inner wheels
+- Removed unused independent filename/payload machine helpers
+
+## 1.4.1
+
+- Base-512 encrypted archive names are trimmed to 255 UTF-8 bytes so they fit on disk
+
+## 1.4.0
+
+- **Base-512** cipher suite (512 letters, 9 bits/symbol, same alphabet as the Base 512 app) in Password, External key, and Internal key modes
+
 ## 1.3.5
 
 - **Internal key** mode stores the catalog codebook in the archive. No password, no `.m10key`. Password and External key modes are unchanged

@@ -24,7 +24,11 @@ public enum M10SealedPayload {
     }
 
     public static func headerSymbolCount(suite: M10CipherSuite) -> Int {
-        suite == .base256 ? headerLength : headerLength * 2
+        switch suite {
+        case .base256: return headerLength
+        case .alpha36, .ascii: return headerLength * 2
+        case .base512: return Base512Symbols.symbolCount(for: headerLength)
+        }
     }
 
     public static func packedUnitCount(storedBytes: Int, suite: M10CipherSuite) -> Int {
@@ -38,6 +42,8 @@ public enum M10SealedPayload {
         case .ascii:
             return ((storedBytes + DensePack.blockBytes - 1) / DensePack.blockBytes)
                 * Ascii94Symbols.denseBlockSymbols
+        case .base512:
+            return Base512Symbols.symbolCount(for: storedBytes)
         }
     }
 
@@ -111,7 +117,9 @@ public enum M10SealedPayload {
         }
         handle.write(Data(PairCodec.encode(header(crc: crc, info: info), suite: suite).utf8))
         try FileIO.copyContents(from: packedURL, to: handle)
-        let packedUnits = try FileIO.byteCount(at: packedURL)
+        let packedBytes = try FileIO.byteCount(at: packedURL)
+        let symbolBytes = suite == .base512 ? Base512Symbols.utf8BytesPerSymbol : 1
+        let packedUnits = packedBytes / max(symbolBytes, 1)
         let unpadded = headerSymbolCount(suite: suite) + packedUnits
         let extra = M10Padding.padCount(
             cipherBytes: unpadded,
@@ -143,7 +151,7 @@ public enum M10SealedPayload {
         let prefixCount = headerSymbolCount(suite: suite)
         guard decoded.count >= prefixCount else { throw M10Error.corruptPayload }
         let prefix = String(decoded.prefix(prefixCount))
-        guard let headerData = PairCodec.decode(prefix, suite: suite),
+        guard let headerData = PairCodec.decode(prefix, suite: suite, storedLength: headerLength),
               headerData.count == headerLength else {
             throw M10Error.corruptPayload
         }
@@ -172,28 +180,34 @@ public enum M10SealedPayload {
         packedURL: URL
     ) throws -> Inner {
         let size = try FileIO.byteCount(at: decodedURL)
-        let headerUnits = headerSymbolCount(suite: suite)
-        guard size >= headerUnits else { throw M10Error.corruptPayload }
+        let symbolBytes = suite == .base512 ? Base512Symbols.utf8BytesPerSymbol : 1
+        let headerChars = headerSymbolCount(suite: suite)
+        let headerBytes = suite == .base256 ? headerLength : headerChars * symbolBytes
+        guard size >= headerBytes else { throw M10Error.corruptPayload }
         let input = try FileHandle(forReadingFrom: decodedURL)
         defer { try? input.close() }
-        let headerChunk = try input.read(upToCount: headerUnits) ?? Data()
-        guard headerChunk.count == headerUnits else { throw M10Error.corruptPayload }
+        let headerChunk = try input.read(upToCount: headerBytes) ?? Data()
+        guard headerChunk.count == headerBytes else { throw M10Error.corruptPayload }
         let headerData: Data
         if suite == .base256 {
             headerData = headerChunk
         } else {
-            guard let decoded = PairCodec.decode(String(decoding: headerChunk, as: UTF8.self), suite: suite),
-                  decoded.count == headerLength else {
+            guard let decoded = PairCodec.decode(
+                String(decoding: headerChunk, as: UTF8.self),
+                suite: suite,
+                storedLength: headerLength
+            ), decoded.count == headerLength else {
                 throw M10Error.corruptPayload
             }
             headerData = decoded
         }
         let parsed = try parseHeader(headerData)
         let packedCount = packedUnitCount(storedBytes: parsed.storedBytes, suite: suite)
-        guard headerUnits + packedCount <= size else { throw M10Error.corruptPayload }
+        let packedBytes = suite == .base256 ? packedCount : packedCount * symbolBytes
+        guard headerBytes + packedBytes <= size else { throw M10Error.corruptPayload }
         let dest = try FileIO.createEmptyFile(at: packedURL)
         defer { try? dest.close() }
-        var remaining = packedCount
+        var remaining = packedBytes
         while remaining > 0 {
             let chunk = try input.read(upToCount: min(FileIO.chunkBytes, remaining)) ?? Data()
             if chunk.isEmpty { throw M10Error.corruptPayload }

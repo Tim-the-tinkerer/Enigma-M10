@@ -105,20 +105,25 @@ public enum M10Password {
     public static func deriveConfiguration(
         password: String,
         suite: M10CipherSuite,
-        params: M10KDFParams
+        params: M10KDFParams,
+        scaledNotches: Bool = true
     ) throws -> (configuration: M10Configuration, master: Data) {
         let master = try deriveMaster(password: password, params: params)
-        return (try expandConfiguration(master: master, suite: suite), master)
+        return (try expandConfiguration(master: master, suite: suite, scaledNotches: scaledNotches), master)
     }
 
-    public static func expandConfiguration(master: Data, suite: M10CipherSuite) throws -> M10Configuration {
+    public static func expandConfiguration(
+        master: Data,
+        suite: M10CipherSuite,
+        scaledNotches: Bool = true
+    ) throws -> M10Configuration {
         let size = suite.alphabetSize
         var rotors: [[Int]] = []
         var notches: [Set<Int>] = []
         for index in 0..<M10Catalog.rotorCount {
             var rng = HMACDRBG(seed: domainKey(master, "M10-ROTOR-\(index)"))
             rotors.append(fisherYates(count: size, rng: &rng))
-            notches.append(notchSet(size: size, rng: &rng))
+            notches.append(notchSet(size: size, rng: &rng, scaled: scaledNotches))
         }
         var refRng = HMACDRBG(seed: domainKey(master, "M10-REFLECTOR"))
         let reflector = involution(count: size, rng: &refRng)
@@ -139,55 +144,9 @@ public enum M10Password {
                 rotorWirings: rotors,
                 rotorNotches: notches,
                 reflectorWiring: reflector
-            )
+            ),
+            scaledNotches: scaledNotches
         )
-    }
-
-    /// HKDF subkeys so filename and payload get independent rotors, reflector, rings, positions, and plugs.
-    public static func domainMaster(
-        master: Data,
-        nonce: Data,
-        domain: M10MessageKey.Domain
-    ) -> Data {
-        let info: String
-        switch domain {
-        case .filename: info = "M10-FILENAME-MACHINE"
-        case .payload: info = "M10-PAYLOAD-MACHINE"
-        }
-        let key = HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: SymmetricKey(data: master),
-            salt: nonce,
-            info: Data(info.utf8),
-            outputByteCount: 32
-        )
-        return key.withUnsafeBytes { Data($0) }
-    }
-
-    public static func expandIndependentPair(
-        master: Data,
-        suite: M10CipherSuite,
-        nonce: Data
-    ) throws -> (filename: M10Configuration, payload: M10Configuration) {
-        let filename = try expandConfiguration(
-            master: domainMaster(master: master, nonce: nonce, domain: .filename),
-            suite: suite
-        )
-        let payload = try expandConfiguration(
-            master: domainMaster(master: master, nonce: nonce, domain: .payload),
-            suite: suite
-        )
-        return (filename, payload)
-    }
-
-    /// External-key v5: codebook identity seeds two derived machines; catalog wirings are not used on the wire.
-    public static func expandIndependentPair(
-        configuration: M10Configuration,
-        nonce: Data
-    ) throws -> (filename: M10Configuration, payload: M10Configuration) {
-        var material = Data("M10-CODEBOOK-MASTER".utf8)
-        material.append(Data(configuration.codebookLine.utf8))
-        let digest = Data(SHA256.hash(data: material))
-        return try expandIndependentPair(master: digest, suite: configuration.cipherSuite, nonce: nonce)
     }
 
     public static func authKey(master: Data) -> SymmetricKey {
@@ -227,8 +186,13 @@ public enum M10Password {
         return result
     }
 
-    private static func notchSet(size: Int, rng: inout HMACDRBG) -> Set<Int> {
-        let count = 1 + rng.uniform(2)
+    private static func notchSet(size: Int, rng: inout HMACDRBG, scaled: Bool) -> Set<Int> {
+        let count: Int
+        if scaled {
+            count = M10Catalog.notchCount(alphabetSize: size, rng: &rng)
+        } else {
+            count = 1 + rng.uniform(2)
+        }
         var set = Set<Int>()
         while set.count < count {
             set.insert(rng.uniform(size))

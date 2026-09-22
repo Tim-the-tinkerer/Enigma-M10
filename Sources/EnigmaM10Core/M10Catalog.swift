@@ -3,11 +3,20 @@ import Foundation
 /// Custom M10 rotor bank: ten stepping rotors plus two thick reflectors.
 /// Alpha-36: permutations of `0–9A–Z`. ASCII-94: printable ASCII `!`–`~`.
 /// Base-256: permutations of `0..<256` (see `Base256Catalog.swift`).
+/// Base-512: permutations of `0..<512` (see `Base512Catalog.swift`).
 public enum M10Catalog {
     public static let rotorNames = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"]
     public static let reflectorNames = ["UKW-M10", "UKW-M10B"]
     public static let rotorCount = 10
     public static let maxPlugPairs = 15
+
+    /// Classic Enigma turns over about once per 26. Alphabets under 512 keep 1–2
+    /// notches so existing Alpha-36 / ASCII-94 / Base-256 password files still open.
+    static func notchCount(alphabetSize: Int, rng: inout HMACDRBG) -> Int {
+        guard alphabetSize >= 512 else { return 1 + rng.uniform(2) }
+        let target = max(8, (alphabetSize + 13) / 26)
+        return min(alphabetSize / 2, max(8, target + rng.uniform(5) - 2))
+    }
 
     public enum Alpha36 {
         public static let rotorWirings: [String: String] = [

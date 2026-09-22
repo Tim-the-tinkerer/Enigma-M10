@@ -49,7 +49,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Enigma – M 10")
                     .font(.title2.weight(.semibold))
-                Text("Ten-rotor Enigma · password, external key, or internal key · Base-256 / Alpha-36 / ASCII-94")
+                Text("Ten-rotor Enigma · password, external key, or internal key · Base-256 / Alpha-36 / ASCII-94 / Base-512")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -106,7 +106,7 @@ struct ContentView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 360)
+                .frame(width: 480)
                 Text(model.cipherSuite.detail)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)

@@ -17,11 +17,11 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.3.5</string>
+    <string>1.5.0</string>
     <key>CFBundleVersion</key>
-    <string>21</string>
+    <string>25</string>
     <key>CFBundleGetInfoString</key>
-    <string>Enigma – M 10 1.3.5</string>
+    <string>Enigma – M 10 1.5.0</string>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026</string>
     <key>LSMinimumSystemVersion</key>

@@ -67,7 +67,7 @@ struct EnigmaM10App: App {
         let alert = NSAlert()
         alert.messageText = "How it works"
         alert.informativeText = """
-        Enigma – M 10 is a ten-rotor Enigma (Alpha-36, ASCII-94, Base-256). Experimental — not FileVault, age, or GPG.
+        Enigma – M 10 is a ten-rotor Enigma (Alpha-36, ASCII-94, Base-256, Base-512). Experimental — not FileVault, age, or GPG.
 
         MACHINE
         • 10 rotors. New writes: carry cascade (a rotor steps only when its right neighbour is itself stepping and on a notch). v2 parked-notch decrypt is preserved.
@@ -77,12 +77,13 @@ struct EnigmaM10App: App {
         • Base-256 (default) — every byte; 1:1 after optional zlib
         • Alpha-36 — 0–9A–Z, dense base-36
         • ASCII-94 — printable ASCII !–~, dense base-94. Plug pairs are space-separated (comma is a symbol).
+        • Base-512 — 512 letters, 9 bits per symbol (same alphabet as the Base 512 app). About 20 notches per rotor so carry-cascade still reaches the inner wheels.
 
         PASSWORD MODE (default)
-        Argon2id (64 MiB / 3 / 1) + HKDF derives the whole machine. Output is opaque binary M10PW03 (salt, Argon2 params, nonce, HMAC, padded ciphertext). Exact sizes and CRC sit inside the ciphertext. Decrypt with the same password. No .m10key.
+        Argon2id (64 MiB / 3 / 1) + HKDF derives the whole machine. Output is opaque binary M10PW04 (salt, Argon2 params, nonce, HMAC, padded ciphertext). Exact sizes and CRC sit inside the ciphertext. Decrypt with the same password. No .m10key.
 
         EXTERNAL KEY MODE
-        You carry a catalog configuration, not a password. Encrypt writes a .m10key beside the ENIGMAM10 v6 JSON archive, then generates a new unused machine. Decrypt loads the sidecar. Demonstration codebook is public and cannot encrypt.
+        You carry a catalog configuration, not a password. Encrypt writes a .m10key beside the ENIGMAM10 v7 JSON archive, then generates a new unused machine. Decrypt loads the sidecar. Demonstration codebook is public and cannot encrypt.
 
         INTERNAL KEY MODE
         The catalog codebook is stored inside the archive. No password and no .m10key. Anyone who has the file can decrypt. Demonstration codebook cannot encrypt.
@@ -94,7 +95,7 @@ struct EnigmaM10App: App {
         Password files: Password mode + password, drop the .enigmam10.
         External-key files: drop the archive (sidecar loads automatically).
         Internal-key files: drop the archive; the stored codebook is used.
-        v6/v5/v4/v3/v2 JSON and M10PW03/02/01 still decrypt. v1 needs Legacy Import… (output UNAUTHENTICATED-).
+        v7/v6/v5/v4/v3/v2 JSON and M10PW04/03/02/01 still decrypt. v1 needs Legacy Import… (output UNAUTHENTICATED-).
         """
         alert.addButton(withTitle: "OK")
         alert.runModal()

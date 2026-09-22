@@ -4,6 +4,7 @@ public enum M10CipherSuite: String, Codable, CaseIterable, Identifiable, Sendabl
     case alpha36
     case ascii
     case base256
+    case base512
 
     public var id: String { rawValue }
 
@@ -12,6 +13,7 @@ public enum M10CipherSuite: String, Codable, CaseIterable, Identifiable, Sendabl
         case .alpha36: return "Alpha-36"
         case .ascii: return "ASCII-94"
         case .base256: return "Base-256"
+        case .base512: return "Base-512"
         }
     }
 
@@ -23,6 +25,8 @@ public enum M10CipherSuite: String, Codable, CaseIterable, Identifiable, Sendabl
             return "!–~ printable ASCII · dense base-94 packing from EnigmaVault"
         case .base256:
             return "all 256 bytes · 1:1 packing after optional zlib"
+        case .base512:
+            return "512 letters · 9 bits/symbol (same alphabet as Base 512)"
         }
     }
 
@@ -31,6 +35,7 @@ public enum M10CipherSuite: String, Codable, CaseIterable, Identifiable, Sendabl
         case .alpha36: return Alpha36Symbols.alphabetSize
         case .ascii: return Ascii94Symbols.alphabetSize
         case .base256: return Base256Symbols.alphabetSize
+        case .base512: return Base512Symbols.alphabetSize
         }
     }
 
@@ -39,6 +44,7 @@ public enum M10CipherSuite: String, Codable, CaseIterable, Identifiable, Sendabl
         case .alpha36: return Alpha36Symbols.alphabet
         case .ascii: return Ascii94Symbols.alphabet
         case .base256: return Base256Symbols.alphabet
+        case .base512: return Base512Symbols.alphabet
         }
     }
 
@@ -57,6 +63,7 @@ public enum M10CipherSuite: String, Codable, CaseIterable, Identifiable, Sendabl
         case .alpha36: return Alpha36Symbols.charToIndex(character)
         case .ascii: return Ascii94Symbols.charToIndex(character)
         case .base256: return Base256Symbols.charToIndex(character)
+        case .base512: return Base512Symbols.charToIndex(character)
         }
     }
 
@@ -65,6 +72,7 @@ public enum M10CipherSuite: String, Codable, CaseIterable, Identifiable, Sendabl
         case .alpha36: return Alpha36Symbols.indexToChar(index)
         case .ascii: return Ascii94Symbols.indexToChar(index)
         case .base256: return Base256Symbols.indexToChar(index)
+        case .base512: return Base512Symbols.indexToChar(index)
         }
     }
 }
@@ -78,6 +86,8 @@ public struct M10Configuration: Equatable, Codable, Sendable {
     public var plugPairs: [String]
     /// Password-derived wirings. Never written to `.enigmam10` or `.m10key`.
     public var derivedMachine: M10DerivedMachine? = nil
+    /// Base-512 catalog/password notches: `false` = v6 1–2 per rotor; `true` = v7 ~20.
+    public var scaledNotches: Bool = true
 
     public init(
         cipherSuite: M10CipherSuite,
@@ -86,7 +96,8 @@ public struct M10Configuration: Equatable, Codable, Sendable {
         rings: String,
         positions: String,
         plugPairs: [String],
-        derivedMachine: M10DerivedMachine? = nil
+        derivedMachine: M10DerivedMachine? = nil,
+        scaledNotches: Bool = true
     ) {
         self.cipherSuite = cipherSuite
         self.rotorNames = rotorNames
@@ -95,6 +106,7 @@ public struct M10Configuration: Equatable, Codable, Sendable {
         self.positions = positions
         self.plugPairs = plugPairs
         self.derivedMachine = derivedMachine
+        self.scaledNotches = scaledNotches
     }
 
     enum CodingKeys: String, CodingKey {
@@ -136,11 +148,33 @@ public struct M10Configuration: Equatable, Codable, Sendable {
         plugPairs: ["49CA", "B9C1", "21EF", "5446", "FC7C", "9AFA", "4E81", "28D1", "5C24", "2F43", "F8BD", "5700"]
     )
 
+    /// Factory daily key for Base-512. Rings/positions/plugs are 512-alphabet letters.
+    public static let base512Factory: M10Configuration = {
+        let letters = Array(Base512Symbols.alphabet)
+        let rings = String(letters[0..<10])
+        let positions = String(letters[10..<20])
+        var plugs: [String] = []
+        var i = 20
+        while plugs.count < 12 {
+            plugs.append(String([letters[i], letters[i + 1]]))
+            i += 2
+        }
+        return M10Configuration(
+            cipherSuite: .base512,
+            rotorNames: ["X", "VII", "III", "IX", "I", "VI", "II", "VIII", "V", "IV"],
+            reflector: "UKW-M10",
+            rings: rings,
+            positions: positions,
+            plugPairs: plugs
+        )
+    }()
+
     public static func factory(for suite: M10CipherSuite) -> M10Configuration {
         switch suite {
         case .alpha36: return alpha36Factory
         case .ascii: return ascii94Factory
         case .base256: return base256Factory
+        case .base512: return base512Factory
         }
     }
 
@@ -151,6 +185,7 @@ public struct M10Configuration: Equatable, Codable, Sendable {
             || self == M10Configuration.alpha36Factory
             || self == M10Configuration.ascii94Factory
             || self == M10Configuration.base256Factory
+            || self == M10Configuration.base512Factory
     }
 
     public static func random(suite: M10CipherSuite) -> M10Configuration {
@@ -223,7 +258,7 @@ public struct M10Configuration: Equatable, Codable, Sendable {
         switch suite {
         case .base256:
             return Base256Symbols.parseField(value) ?? []
-        case .alpha36, .ascii:
+        case .alpha36, .ascii, .base512:
             return value.filter { !$0.isWhitespace }.compactMap { suite.charToIndex($0) }
         }
     }
@@ -232,7 +267,7 @@ public struct M10Configuration: Equatable, Codable, Sendable {
         switch suite {
         case .base256:
             return Base256Symbols.formatField(indices)
-        case .alpha36, .ascii:
+        case .alpha36, .ascii, .base512:
             return String(indices.map { suite.indexToChar($0) })
         }
     }
@@ -241,7 +276,7 @@ public struct M10Configuration: Equatable, Codable, Sendable {
         switch suite {
         case .base256:
             return Base256Symbols.parsePlugPair(token)
-        case .alpha36, .ascii:
+        case .alpha36, .ascii, .base512:
             let symbols = Array(token.filter { suite.charToIndex($0) != nil })
             guard symbols.count == 2,
                   let a = suite.charToIndex(symbols[0]),
@@ -254,7 +289,7 @@ public struct M10Configuration: Equatable, Codable, Sendable {
         switch suite {
         case .base256:
             return Base256Symbols.formatPlugPair(a, b)
-        case .alpha36, .ascii:
+        case .alpha36, .ascii, .base512:
             return String([suite.indexToChar(a), suite.indexToChar(b)])
         }
     }
@@ -283,7 +318,7 @@ public struct M10Configuration: Equatable, Codable, Sendable {
         // ASCII-94 includes comma and semicolon; only whitespace is a delimiter.
         let tokens: [String]
         switch suite {
-        case .ascii:
+        case .ascii, .base512:
             tokens = text.split(whereSeparator: { $0.isWhitespace })
                 .map { String($0) }
                 .filter { !$0.isEmpty }
@@ -296,7 +331,7 @@ public struct M10Configuration: Equatable, Codable, Sendable {
             switch suite {
             case .alpha36, .base256:
                 return token.uppercased()
-            case .ascii:
+            case .ascii, .base512:
                 return token
             }
         }
@@ -372,7 +407,7 @@ public struct M10Configuration: Equatable, Codable, Sendable {
             guard Base256Symbols.parseField(value) != nil else {
                 throw M10Error.invalidSettings("\(name) must be \(M10Catalog.rotorCount) bytes as 20 hex digits.")
             }
-        case .alpha36, .ascii:
+        case .alpha36, .ascii, .base512:
             let compact = value.filter { !$0.isWhitespace }
             guard compact.count == M10Catalog.rotorCount else {
                 throw M10Error.invalidSettings("\(name) must be \(M10Catalog.rotorCount) symbols (one per rotor).")
@@ -386,6 +421,10 @@ public struct M10Configuration: Equatable, Codable, Sendable {
                 case .ascii:
                     guard Ascii94Symbols.isValidSymbol(character) else {
                         throw M10Error.invalidSettings("\(name) uses invalid ASCII-94 symbol.")
+                    }
+                case .base512:
+                    guard Base512Symbols.isValidSymbol(character) else {
+                        throw M10Error.invalidSettings("\(name) uses invalid Base-512 symbol.")
                     }
                 case .base256:
                     break
@@ -423,6 +462,13 @@ public struct M10Configuration: Equatable, Codable, Sendable {
                 }
                 a = Ascii94Symbols.charToIndex(symbols[0])!
                 b = Ascii94Symbols.charToIndex(symbols[1])!
+            case .base512:
+                let symbols = Array(pair.filter { Base512Symbols.isValidSymbol($0) })
+                guard symbols.count == 2 else {
+                    throw M10Error.invalidSettings("Each plugboard pair must be two symbols.")
+                }
+                a = Base512Symbols.charToIndex(symbols[0])!
+                b = Base512Symbols.charToIndex(symbols[1])!
             }
             guard a != b else {
                 throw M10Error.invalidSettings("A plug cannot connect a symbol to itself.")

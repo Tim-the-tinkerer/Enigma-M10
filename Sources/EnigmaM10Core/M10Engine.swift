@@ -27,11 +27,16 @@ public enum M10Engine {
         password: String? = nil,
         kdf: M10KDFParams? = nil,
         formatVersion: Int = M10Format.currentVersion,
-        keyMode: M10KeyMode = .external
+        keyMode: M10KeyMode = .external,
+        forceScaledNotches: Bool? = nil
     ) throws -> M10Format.EncryptResult {
         guard data.count <= M10Format.maxPayloadBytes else { throw M10Error.payloadTooLarge }
         let keying = try materializeKey(
-            configuration: configuration, password: password, kdf: kdf, keyMode: keyMode
+            configuration: configuration,
+            password: password,
+            kdf: kdf,
+            keyMode: keyMode,
+            scaledNotches: forceScaledNotches ?? (formatVersion >= M10Format.scaledNotchesVersion)
         )
         let validated = keying.config
         let stepping = M10Stepping.forArchiveVersion(formatVersion)
@@ -243,7 +248,11 @@ public enum M10Engine {
         guard size <= M10Format.maxStreamPayloadBytes else { throw M10Error.payloadTooLarge }
         let formatVersion = M10Format.currentVersion
         let keying = try materializeKey(
-            configuration: configuration, password: password, kdf: kdf, keyMode: keyMode
+            configuration: configuration,
+            password: password,
+            kdf: kdf,
+            keyMode: keyMode,
+            scaledNotches: formatVersion >= M10Format.scaledNotchesVersion
         )
         let validated = keying.config
         let stepping = M10Stepping.forArchiveVersion(formatVersion)
@@ -401,46 +410,47 @@ public enum M10Engine {
         let layout = try M10Format.parseLayout(data)
         let archive = layout.archive
         try enforceDecryptMode(mode, archive: archive)
-        let session = try sessionKeys(archive: archive, configuration: configuration, password: password)
-        if archive.version >= M10Format.carrySteppingVersion {
-            let ciphertext: Data
-            if archive.isHybrid {
-                ciphertext = try hybridSlice(data, layout: layout, archive: archive)
-            } else {
-                ciphertext = Data((archive.ciphertext ?? "").utf8)
-            }
-            try M10MessageKey.verifyCiphertext(
-                archive: archive,
-                configuration: session.config,
-                ciphertext: ciphertext,
-                authKey: session.authKey
-            )
-        }
-        if archive.isHybrid {
-            let binary = try hybridSlice(data, layout: layout, archive: archive)
-            if archive.cipherSuite == .base256 {
-                return try decryptHybridBytes(
+        return try withNotchProfiles(archive: archive, configuration: configuration, password: password) { config, authKey in
+            if archive.version >= M10Format.carrySteppingVersion {
+                let ciphertext: Data
+                if archive.isHybrid {
+                    ciphertext = try hybridSlice(data, layout: layout, archive: archive)
+                } else {
+                    ciphertext = Data((archive.ciphertext ?? "").utf8)
+                }
+                try M10MessageKey.verifyCiphertext(
                     archive: archive,
-                    ciphertext: binary,
-                    configuration: session.config,
-                    isLegacyImport: mode == .legacyImport,
-                    authKey: session.authKey
+                    configuration: config,
+                    ciphertext: ciphertext,
+                    authKey: authKey
                 )
             }
-            return try decryptHybrid(
+            if archive.isHybrid {
+                let binary = try hybridSlice(data, layout: layout, archive: archive)
+                if archive.cipherSuite == .base256 {
+                    return try decryptHybridBytes(
+                        archive: archive,
+                        ciphertext: binary,
+                        configuration: config,
+                        isLegacyImport: mode == .legacyImport,
+                        authKey: authKey
+                    )
+                }
+                return try decryptHybrid(
+                    archive: archive,
+                    ciphertextSymbols: String(decoding: binary, as: UTF8.self),
+                    configuration: config,
+                    isLegacyImport: mode == .legacyImport,
+                    authKey: authKey
+                )
+            }
+            return try decryptInline(
                 archive: archive,
-                ciphertextSymbols: String(decoding: binary, as: UTF8.self),
-                configuration: session.config,
+                configuration: config,
                 isLegacyImport: mode == .legacyImport,
-                authKey: session.authKey
+                authKey: authKey
             )
         }
-        return try decryptInline(
-            archive: archive,
-            configuration: session.config,
-            isLegacyImport: mode == .legacyImport,
-            authKey: session.authKey
-        )
     }
 
     public static func decryptFile(
@@ -454,41 +464,42 @@ public enum M10Engine {
         }
         let header = try M10Format.readHeader(at: url)
         try enforceDecryptMode(mode, archive: header.archive)
-        let session = try sessionKeys(archive: header.archive, configuration: configuration, password: password)
+        return try withNotchProfiles(archive: header.archive, configuration: configuration, password: password) { config, authKey in
         if header.archive.version >= M10Format.carrySteppingVersion, header.archive.isHybrid {
             let extra = header.archive.payloadOffset ?? 0
             let length = header.archive.payloadLength ?? 0
             try M10MessageKey.verifyCiphertextRegion(
                 archive: header.archive,
-                configuration: session.config,
+                configuration: config,
                 file: url,
                 offset: header.binaryOffset + UInt64(extra),
                 length: length,
-                authKey: session.authKey
+                authKey: authKey
             )
         } else if header.archive.version >= M10Format.carrySteppingVersion {
             try M10MessageKey.verifyCiphertext(
                 archive: header.archive,
-                configuration: session.config,
+                configuration: config,
                 ciphertext: Data((header.archive.ciphertext ?? "").utf8),
-                authKey: session.authKey
+                authKey: authKey
             )
         }
         if header.archive.isHybrid {
             return try decryptHybridFile(
                 at: url,
                 header: header,
-                configuration: session.config,
+                configuration: config,
                 isLegacyImport: mode == .legacyImport,
-                authKey: session.authKey
+                authKey: authKey
             )
         }
         return try decryptInline(
             archive: header.archive,
-            configuration: session.config,
+            configuration: config,
             isLegacyImport: mode == .legacyImport,
-            authKey: session.authKey
+            authKey: authKey
         )
+        }
     }
 
     private static func enforceDecryptMode(_ mode: M10DecryptMode, archive: M10Format.Archive) throws {
@@ -594,27 +605,26 @@ public enum M10Engine {
     ) throws -> DecryptResult {
         let parsed = try M10PasswordBinary.parse(data)
         try enforceDecryptMode(mode, archive: parsed.archive)
-        let session = try sessionKeys(
-            archive: parsed.archive, configuration: configuration, password: password
-        )
-        guard let authKey = session.authKey else { throw M10Error.passwordRequired }
-        try M10PasswordBinary.verify(parsed, authKey: authKey)
-        if parsed.archive.cipherSuite == .base256 {
-            return try decryptHybridBytes(
+        return try withNotchProfiles(archive: parsed.archive, configuration: configuration, password: password) { config, authKey in
+            guard let authKey else { throw M10Error.passwordRequired }
+            try M10PasswordBinary.verify(parsed, authKey: authKey)
+            if parsed.archive.cipherSuite == .base256 {
+                return try decryptHybridBytes(
+                    archive: parsed.archive,
+                    ciphertext: parsed.ciphertext,
+                    configuration: config,
+                    isLegacyImport: false,
+                    authKey: authKey
+                )
+            }
+            return try decryptHybrid(
                 archive: parsed.archive,
-                ciphertext: parsed.ciphertext,
-                configuration: session.config,
+                ciphertextSymbols: String(decoding: parsed.ciphertext, as: UTF8.self),
+                configuration: config,
                 isLegacyImport: false,
                 authKey: authKey
             )
         }
-        return try decryptHybrid(
-            archive: parsed.archive,
-            ciphertextSymbols: String(decoding: parsed.ciphertext, as: UTF8.self),
-            configuration: session.config,
-            isLegacyImport: false,
-            authKey: authKey
-        )
     }
 
     private static func decryptPasswordFile(
@@ -625,26 +635,26 @@ public enum M10Engine {
     ) throws -> DecryptResult {
         let prefix = try M10PasswordBinary.readPrefix(at: url)
         try enforceDecryptMode(mode, archive: prefix.archive)
-        let session = try sessionKeys(
-            archive: prefix.archive, configuration: configuration, password: password
-        )
-        guard let authKey = session.authKey else { throw M10Error.passwordRequired }
-        try M10PasswordBinary.verifyFile(at: url, parsedHeader: prefix, authKey: authKey)
-        let header = M10Format.Header(archive: prefix.archive, binaryOffset: prefix.binaryOffset)
-        return try decryptHybridFile(
-            at: url,
-            header: header,
-            configuration: session.config,
-            isLegacyImport: false,
-            authKey: authKey
-        )
+        return try withNotchProfiles(archive: prefix.archive, configuration: configuration, password: password) { config, authKey in
+            guard let authKey else { throw M10Error.passwordRequired }
+            try M10PasswordBinary.verifyFile(at: url, parsedHeader: prefix, authKey: authKey)
+            let header = M10Format.Header(archive: prefix.archive, binaryOffset: prefix.binaryOffset)
+            return try decryptHybridFile(
+                at: url,
+                header: header,
+                configuration: config,
+                isLegacyImport: false,
+                authKey: authKey
+            )
+        }
     }
 
     private static func materializeKey(
         configuration: M10Configuration,
         password: String?,
         kdf: M10KDFParams? = nil,
-        keyMode: M10KeyMode = .external
+        keyMode: M10KeyMode = .external,
+        scaledNotches: Bool = true
     ) throws -> (config: M10Configuration, authKey: SymmetricKey?, kdf: M10KDFParams?, keyMode: String) {
         if let password {
             guard !password.isEmpty else { throw M10Error.passwordRequired }
@@ -652,7 +662,8 @@ public enum M10Engine {
             let derived = try M10Password.deriveConfiguration(
                 password: password,
                 suite: configuration.cipherSuite,
-                params: params
+                params: params,
+                scaledNotches: scaledNotches
             )
             return (
                 try derived.configuration.validated(),
@@ -662,7 +673,9 @@ public enum M10Engine {
             )
         }
         if keyMode == .password { throw M10Error.passwordRequired }
-        return (try configuration.validated(), nil, nil, keyMode.rawValue)
+        var validated = try configuration.validated()
+        validated.scaledNotches = scaledNotches
+        return (validated, nil, nil, keyMode.rawValue)
     }
 
     private static func storedCodebook(mode: String, configuration: M10Configuration) -> M10Configuration? {
@@ -697,14 +710,16 @@ public enum M10Engine {
     private static func sessionKeys(
         archive: M10Format.Archive,
         configuration: M10Configuration,
-        password: String?
+        password: String?,
+        scaledNotches: Bool
     ) throws -> (config: M10Configuration, authKey: SymmetricKey?) {
         if archive.keyMode == M10KeyMode.internalKey.rawValue {
             guard let codebook = archive.codebook else { throw M10Error.invalidFormat }
-            let validated = try codebook.validated()
+            var validated = try codebook.validated()
             guard validated.cipherSuite == archive.cipherSuite else {
                 throw M10Error.settingsMismatch
             }
+            validated.scaledNotches = scaledNotches
             return (validated, nil)
         }
         if let kdf = archive.kdf {
@@ -712,15 +727,65 @@ public enum M10Engine {
             let derived = try M10Password.deriveConfiguration(
                 password: password,
                 suite: archive.cipherSuite,
-                params: kdf
+                params: kdf,
+                scaledNotches: scaledNotches
             )
             return (try derived.configuration.validated(), M10Password.authKey(master: derived.master))
         }
-        let validated = try configuration.validated()
+        var validated = try configuration.validated()
         guard validated.cipherSuite == archive.cipherSuite else {
             throw M10Error.settingsMismatch
         }
+        validated.scaledNotches = scaledNotches
         return (validated, nil)
+    }
+
+    private static func withNotchProfiles(
+        archive: M10Format.Archive,
+        configuration: M10Configuration,
+        password: String?,
+        _ body: (M10Configuration, SymmetricKey?) throws -> DecryptResult
+    ) throws -> DecryptResult {
+        let profiles = notchProfiles(for: archive)
+        var lastError: Error?
+        for (index, scaled) in profiles.enumerated() {
+            do {
+                let session = try sessionKeys(
+                    archive: archive,
+                    configuration: configuration,
+                    password: password,
+                    scaledNotches: scaled
+                )
+                return try body(session.config, session.authKey)
+            } catch {
+                lastError = error
+                if index + 1 < profiles.count, isNotchProfileMismatch(error) {
+                    continue
+                }
+                throw error
+            }
+        }
+        throw lastError ?? M10Error.settingsMismatch
+    }
+
+    private static func notchProfiles(for archive: M10Format.Archive) -> [Bool] {
+        let scaled = archive.version >= M10Format.scaledNotchesVersion
+        if archive.cipherSuite == .base512,
+           archive.version >= M10Format.sealedPaddingVersion,
+           archive.version < M10Format.scaledNotchesVersion {
+            return [false, true]
+        }
+        return [scaled]
+    }
+
+    private static func isNotchProfileMismatch(_ error: Error) -> Bool {
+        guard let error = error as? M10Error else { return false }
+        switch error {
+        case .settingsMismatch, .corruptPayload, .corruptFilename, .invalidFormat:
+            return true
+        default:
+            return false
+        }
     }
 
     private static func decryptInline(
@@ -1144,6 +1209,7 @@ public enum M10Engine {
                 guard scalar.value <= 255 else { return nil }
                 return Character(scalar)
             })
+        case .base512: return Base512Symbols.filteredSymbols(text)
         }
     }
 }

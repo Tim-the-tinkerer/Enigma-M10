@@ -29,6 +29,7 @@ public final class M10Machine {
     private var initialPositions: [Int] = []
     private var derivedMachine: M10DerivedMachine?
     private let stepping: M10Stepping
+    private let scaledNotches: Bool
 
     public init(configuration: M10Configuration, stepping: M10Stepping = .carryCascade) throws {
         let config = try configuration.validated()
@@ -36,6 +37,7 @@ public final class M10Machine {
         alphabetSize = config.cipherSuite.alphabetSize
         derivedMachine = config.derivedMachine
         self.stepping = stepping
+        scaledNotches = config.scaledNotches
         plugboard = Array(0..<alphabetSize)
         reset(
             rotorNames: config.rotorNames,
@@ -120,21 +122,41 @@ public final class M10Machine {
         defer { try? input.close() }
         var writeBuf = Data()
         writeBuf.reserveCapacity(65_536)
+        var pending = Data()
+        func flush() {
+            if writeBuf.count >= 65_536 {
+                output.write(writeBuf)
+                writeBuf.removeAll(keepingCapacity: true)
+            }
+        }
         while true {
             let chunk = try input.read(upToCount: FileIO.chunkBytes) ?? Data()
             if chunk.isEmpty { break }
-            for byte in chunk {
-                if suite == .base256 {
+            if suite == .base256 {
+                for byte in chunk {
                     writeBuf.append(UInt8(encryptSymbolIndex(Int(byte))))
-                } else {
+                    flush()
+                }
+            } else if suite == .base512 {
+                pending.append(chunk)
+                var i = 0
+                while i + 1 < pending.count {
+                    let scalar = UInt32(pending[i] & 0x1F) << 6 | UInt32(pending[i + 1] & 0x3F)
+                    if let index = Base512Symbols.charToIndex(Character(Unicode.Scalar(scalar)!)) {
+                        let out = String(indexToChar(encryptSymbolIndex(index)))
+                        writeBuf.append(contentsOf: out.utf8)
+                        flush()
+                    }
+                    i += 2
+                }
+                pending = pending.subdata(in: i..<pending.count)
+            } else {
+                for byte in chunk {
                     let character = Character(UnicodeScalar(byte))
                     guard let index = charToIndex(character),
                           let ascii = indexToChar(encryptSymbolIndex(index)).asciiValue else { continue }
                     writeBuf.append(ascii)
-                }
-                if writeBuf.count >= 65_536 {
-                    output.write(writeBuf)
-                    writeBuf.removeAll(keepingCapacity: true)
+                    flush()
                 }
             }
         }
@@ -149,24 +171,39 @@ public final class M10Machine {
         var remaining = length
         var writeBuf = Data()
         writeBuf.reserveCapacity(65_536)
+        var pending = Data()
         while remaining > 0 {
             let toRead = min(FileIO.chunkBytes, remaining)
             let chunk = try input.read(upToCount: toRead) ?? Data()
             if chunk.isEmpty { throw M10Error.corruptPayload }
             remaining -= chunk.count
-            for byte in chunk {
-                if suite == .base256 {
+            if suite == .base256 {
+                for byte in chunk {
                     writeBuf.append(UInt8(encryptSymbolIndex(Int(byte))))
-                } else {
+                }
+            } else if suite == .base512 {
+                pending.append(chunk)
+                var i = 0
+                while i + 1 < pending.count {
+                    let scalar = UInt32(pending[i] & 0x1F) << 6 | UInt32(pending[i + 1] & 0x3F)
+                    if let index = Base512Symbols.charToIndex(Character(Unicode.Scalar(scalar)!)) {
+                        let out = String(indexToChar(encryptSymbolIndex(index)))
+                        writeBuf.append(contentsOf: out.utf8)
+                    }
+                    i += 2
+                }
+                pending = pending.subdata(in: i..<pending.count)
+            } else {
+                for byte in chunk {
                     let character = Character(UnicodeScalar(byte))
                     guard let index = charToIndex(character),
                           let ascii = indexToChar(encryptSymbolIndex(index)).asciiValue else { continue }
                     writeBuf.append(ascii)
                 }
-                if writeBuf.count >= 65_536 {
-                    dest.write(writeBuf)
-                    writeBuf.removeAll(keepingCapacity: true)
-                }
+            }
+            if writeBuf.count >= 65_536 {
+                dest.write(writeBuf)
+                writeBuf.removeAll(keepingCapacity: true)
             }
         }
         if !writeBuf.isEmpty { dest.write(writeBuf) }
@@ -227,6 +264,8 @@ public final class M10Machine {
                 symbols = Array(pair.uppercased().filter { Alpha36Symbols.isValidSymbol($0) })
             case .ascii:
                 symbols = Array(pair.filter { Ascii94Symbols.isValidSymbol($0) })
+            case .base512:
+                symbols = Array(pair.filter { Base512Symbols.isValidSymbol($0) })
             }
             let a = charToIndex(symbols[0])!
             let b = charToIndex(symbols[1])!
@@ -265,6 +304,12 @@ public final class M10Machine {
             }
             forward = wiring
             notches = M10Catalog.Base256.notchSet(name)
+        case .base512:
+            guard let wiring = M10Catalog.Base512.rotorWirings[name] else {
+                preconditionFailure("Invalid rotor after validation: \(name)")
+            }
+            forward = wiring
+            notches = M10Catalog.Base512.notchSet(name, scaled: scaledNotches)
         }
         return rotor(forward: forward, notches: notches)
     }
@@ -286,6 +331,11 @@ public final class M10Machine {
                 preconditionFailure("Invalid reflector after validation: \(name)")
             }
             return wiring
+        case .base512:
+            guard let wiring = M10Catalog.Base512.reflectorWirings[name] else {
+                preconditionFailure("Invalid reflector after validation: \(name)")
+            }
+            return wiring
         }
     }
 
@@ -294,6 +344,7 @@ public final class M10Machine {
         case .alpha36: return Alpha36Symbols.charToIndex(character)
         case .ascii: return Ascii94Symbols.charToIndex(character)
         case .base256: return Base256Symbols.charToIndex(character)
+        case .base512: return Base512Symbols.charToIndex(character)
         }
     }
 
@@ -302,6 +353,7 @@ public final class M10Machine {
         case .alpha36: return Alpha36Symbols.indexToChar(index)
         case .ascii: return Ascii94Symbols.indexToChar(index)
         case .base256: return Base256Symbols.indexToChar(index)
+        case .base512: return Base512Symbols.indexToChar(index)
         }
     }
 
@@ -313,6 +365,8 @@ public final class M10Machine {
             return value.compactMap(Ascii94Symbols.charToIndex)
         case .base256:
             return Base256Symbols.parseField(value) ?? []
+        case .base512:
+            return value.compactMap(Base512Symbols.charToIndex)
         }
     }
 }
@@ -327,6 +381,11 @@ public enum M10SelfTest {
         let out = machine.processMessage(alpha36Plain)
         guard out == alpha36Cipher else { return false }
         machine.resetPositions()
-        return machine.processMessage(out) == alpha36Plain
+        guard machine.processMessage(out) == alpha36Plain else { return false }
+        guard let b512 = try? M10Machine(configuration: .base512Factory) else { return false }
+        let sample = String(Base512Symbols.alphabet.prefix(5))
+        let cipher = b512.processMessage(sample)
+        b512.resetPositions()
+        return b512.processMessage(cipher) == sample
     }
 }

@@ -31,7 +31,11 @@ public enum M10Padding: Int, CaseIterable, Sendable {
     public static let nameFieldBytes = 256
 
     public static func expectedNameWireBytes(suite: M10CipherSuite) -> Int {
-        suite == .base256 ? nameFieldBytes : nameFieldBytes * 2
+        switch suite {
+        case .base256: return nameFieldBytes
+        case .alpha36, .ascii: return nameFieldBytes * 2
+        case .base512: return Base512Symbols.symbolCount(for: nameFieldBytes) * Base512Symbols.utf8BytesPerSymbol
+        }
     }
 
     /// 4 KiB only when both the original file and the unpadded inner payload are under 64 KiB.
@@ -132,7 +136,7 @@ public enum M10Padding: Int, CaseIterable, Sendable {
             plain = encrypted ? machine.processBytes(raw) : raw
         } else {
             let symbols = encrypted ? machine.processMessage(field) : field
-            guard let data = PairCodec.decode(symbols, suite: suite) else {
+            guard let data = PairCodec.decode(symbols, suite: suite, storedLength: nameFieldBytes) else {
                 throw M10Error.corruptFilename
             }
             plain = data
@@ -146,21 +150,28 @@ public enum M10Padding: Int, CaseIterable, Sendable {
             return Base256Symbols.latin1String(try M10MessageKey.randomBytes(count))
         }
         let size = suite.alphabetSize
-        let limit = (256 / size) * size
         var symbols = ""
         symbols.reserveCapacity(count)
         while symbols.count < count {
-            let chunk = try M10MessageKey.randomBytes(max(32, (count - symbols.count) * 2))
-            for byte in chunk {
-                let value = Int(byte)
-                guard value < limit else { continue }
-                let index = value % size
-                switch suite {
-                case .alpha36: symbols.append(Alpha36Symbols.indexToChar(index))
-                case .ascii: symbols.append(Ascii94Symbols.indexToChar(index))
-                case .base256: break
+            let need = max(32, (count - symbols.count) * 2)
+            let chunk = try M10MessageKey.randomBytes(need)
+            if size <= 256 {
+                let limit = (256 / size) * size
+                for byte in chunk {
+                    let value = Int(byte)
+                    guard value < limit else { continue }
+                    symbols.append(suite.indexToChar(value % size))
+                    if symbols.count == count { break }
                 }
-                if symbols.count == count { break }
+            } else {
+                var i = 0
+                while i + 1 < chunk.count, symbols.count < count {
+                    let value = (Int(chunk[i]) << 8) | Int(chunk[i + 1])
+                    i += 2
+                    let limit = (65_536 / size) * size
+                    guard value < limit else { continue }
+                    symbols.append(suite.indexToChar(value % size))
+                }
             }
         }
         return symbols

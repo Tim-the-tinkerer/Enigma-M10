@@ -8,7 +8,7 @@ Argon2id, HKDF-SHA256, HMAC-SHA256, and `SecRandomCopyBytes` are modern primitiv
 
 Argon2id (64 MiB / 3 / 1) turns password + per-file salt into a 32-byte master. HKDF domain tags (`M10-ROTOR-0`…`9`, `M10-REFLECTOR`, `M10-RINGS`, `M10-POSITIONS`, `M10-PLUGS`, `M10-AUTH`) expand into Fisher-Yates rotors, a fixed-point-free reflector, notches, rings, positions, plugs, and the HMAC key.
 
-The `M10PW03` file stores salt, Argon2 parameters, nonce, encrypted name, HMAC, and padded ciphertext. Original/stored sizes and CRC-32 sit inside the rotor ciphertext, not in the public header. Rotors are not stored. HMAC (`M10PW-aad-1`) is encrypt-then-MAC over header + ciphertext and is checked before rotor decrypt or zlib.
+The `M10PW04` file stores salt, Argon2 parameters, nonce, encrypted name, HMAC, and padded ciphertext. Original/stored sizes and CRC-32 sit inside the rotor ciphertext, not in the public header. Rotors are not stored. HMAC (`M10PW-aad-1`) is encrypt-then-MAC over header + ciphertext and is checked before rotor decrypt or zlib.
 
 New writes always pad: 4 KiB only when both the original file and the unpadded inner payload are under 64 KiB; otherwise 64 KiB. A large compressible file does not look like a 4 KiB blob after zlib. Filenames are stored in a fixed 256-byte field so the public `nameLen` does not track the real name. The on-disk length is therefore a 4 KiB or 64 KiB bucket, not the exact payload. `M10PW01` / `M10PW02` still decrypt and did publish sizes.
 
@@ -29,10 +29,10 @@ The catalog codebook is stored in the archive (`keyMode: internal` + `codebook`)
 | CRC-32 of plaintext | Recovery check | Not authentication |
 | v2 JSON `authTag` | HMAC of recovered plaintext + interpretation fields, after decrypt | Not encrypt-then-MAC |
 | v3/v4 JSON `authTag` | HMAC of header + ciphertext, before decrypt (v4 also binds `createdAt`) | Not AES-GCM |
-| `M10PW03` tag | HMAC of binary header + padded ciphertext, before decrypt | Not AES-GCM |
+| `M10PW04` tag | HMAC of binary header + padded ciphertext, before decrypt | Not AES-GCM |
 | `M10PW01` / `M10PW02` tag | HMAC of binary header + ciphertext, before decrypt | Not AES-GCM |
 
-**Decrypt** accepts authenticated JSON v2–v6 and `M10PW01`–`M10PW03`. Relabeling as v1 is rejected on that path.
+**Decrypt** accepts authenticated JSON v2–v7 and `M10PW01`–`M10PW04`. Relabeling as v1 is rejected on that path.
 
 **Legacy Import** is only for genuine v1 JSON. Output is prefixed `UNAUTHENTICATED-`.
 

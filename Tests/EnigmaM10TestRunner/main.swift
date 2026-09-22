@@ -131,7 +131,7 @@ func archiveOmitsSettings() throws {
         encryptFilename: true
     )
     let text = String(decoding: result.data, as: UTF8.self)
-    expect(text.hasPrefix("ENIGMAM10 v6\n"), "magic")
+    expect(text.hasPrefix("ENIGMAM10 v7\n"), "magic")
     expect(result.suggestedFilename.hasSuffix(".enigmam10"), "disk extension")
     expect(!text.contains("\"rotorNames\""), "no rotorNames")
     expect(!text.contains("\"plugPairs\""), "no plugPairs")
@@ -288,7 +288,7 @@ func streamingRoundTrip() throws {
 
     let header = try M10Format.readHeader(at: archiveURL)
     expect(header.archive.isHybrid, "hybrid layout")
-    expectEqual(header.archive.version, 6, "sealed padding version")
+    expectEqual(header.archive.version, 7, "scaled-notch version")
     expectEqual(header.archive.payloadOriginalBytes, 0, "sizes are not public")
     expect((header.archive.payloadLength ?? 0) % 4096 == 0, "ciphertext 4 KiB aligned")
     expect(header.archive.ciphertext == nil || header.archive.ciphertext?.isEmpty == true, "no inline ciphertext")
@@ -332,7 +332,7 @@ func nonceAndAuth() throws {
     )
     expect(a.data != b.data, "nonce should change ciphertext")
     let headerA = try M10Format.decodeArchive(a.data)
-    expectEqual(headerA.version, 6, "new archives are v6")
+    expectEqual(headerA.version, 7, "new archives are v7")
     expectEqual(headerA.payloadOriginalBytes, 0, "sizes sealed")
     expect(headerA.messageNonce != nil, "nonce stored")
     expect(headerA.authTag != nil, "auth tag stored")
@@ -422,7 +422,7 @@ func v2RequiresNonceAndAuth() throws {
         data: payload, originalFilename: "v2.txt", configuration: .alpha36Factory
     )
     var archive = try M10Format.decodeArchive(result.data)
-    expectEqual(archive.version, 6)
+    expectEqual(archive.version, 7)
 
     archive.authTag = nil
     expectThrows({
@@ -539,7 +539,7 @@ func passwordModeRoundTrip() throws {
         password: password,
         kdf: params
     )
-    expect(result.data.starts(with: M10PasswordBinary.magicV3), "M10PW03")
+    expect(result.data.starts(with: M10PasswordBinary.magicV4), "M10PW04")
     expect(M10PasswordBinary.matches(result.data), "opaque password blob")
     expect(!String(decoding: result.data.prefix(32), as: UTF8.self).contains("{"), "not JSON")
     expect(!result.data.starts(with: Data("ENIGMAM10".utf8)), "not external-key JSON")
@@ -786,6 +786,123 @@ func internalKeyRoundTrip() throws {
     print("OK internal key roundtrip")
 }
 
+func base512SuiteRoundTrip() throws {
+    let payload = Data("base512-three-modes".utf8)
+    let packed = DensePack.pack(payload, suite: .base512, allowCompression: false)
+    let unpacked = try DensePack.unpack(packed.symbols, info: packed.info, suite: .base512)
+    expectEqual(unpacked, payload)
+
+    let machine = try M10Machine(configuration: .base512Factory)
+    let sample = String(Base512Symbols.alphabet.prefix(8))
+    let cipher = machine.processMessage(sample)
+    machine.resetPositions()
+    expectEqual(machine.processMessage(cipher), sample)
+
+    let params = try testKDF()
+    let pw = try M10Engine.encrypt(
+        data: payload,
+        originalFilename: "b512.bin",
+        configuration: .base512Factory,
+        password: "pw",
+        kdf: params
+    )
+    expect(pw.data.starts(with: M10PasswordBinary.magicV4))
+    expectEqual(
+        try M10Engine.decrypt(data: pw.data, configuration: .base512Factory, password: "pw").payload,
+        payload
+    )
+
+    let config = M10Configuration.random(suite: .base512)
+    let ext = try M10Engine.encrypt(
+        data: payload,
+        originalFilename: "b512.bin",
+        configuration: config,
+        keyMode: .external
+    )
+    expectEqual(
+        try M10Engine.decrypt(data: ext.data, configuration: config).payload,
+        payload
+    )
+
+    let inner = try M10Engine.encrypt(
+        data: payload,
+        originalFilename: "b512.bin",
+        configuration: config,
+        keyMode: .internalKey
+    )
+    expectEqual(
+        try M10Engine.decrypt(data: inner.data, configuration: .base512Factory).payload,
+        payload
+    )
+    let name = M10Format.suggestedArchiveFilename(
+        encryptedSymbols: String(Base512Symbols.alphabet),
+        suite: .base512
+    )
+    expect(name.utf8.count <= 255, "Base-512 archive name fits APFS")
+    expect(name.hasSuffix(".enigmam10"))
+    for name in M10Catalog.rotorNames {
+        let n = M10Catalog.Base512.notchSet(name).count
+        expect(n >= 8 && n <= 22, "catalog \(name) has \(n) notches")
+    }
+    let master = Data(repeating: 0x5A, count: 32)
+    let derived = try M10Password.expandConfiguration(master: master, suite: .base512)
+    for notches in derived.derivedMachine!.rotorNotches {
+        expect(notches.count >= 8 && notches.count <= 22, "derived notches \(notches.count)")
+    }
+    for name in M10Catalog.rotorNames {
+        expect(M10Catalog.Base512.notchSet(name, scaled: false).count <= 2, "v6 catalog \(name)")
+        let n = M10Catalog.Base512.notchSet(name, scaled: true).count
+        expect(n >= 8 && n <= 22, "v7 catalog \(name)")
+    }
+    print("OK base512 three modes")
+}
+
+func base512NotchVersionIdentity() throws {
+    let payload = Data("Origin story of how pirate Captain Jankface, got his unique name".utf8)
+    let config = M10Configuration.random(suite: .base512)
+    let v7 = try M10Engine.encrypt(
+        data: payload, originalFilename: "story.txt", configuration: config, keyMode: .internalKey
+    )
+    expectEqual(try M10Format.parseLayout(v7.data).archive.version, 7)
+    expectEqual(try M10Engine.decrypt(data: v7.data, configuration: .base512Factory).payload, payload)
+
+    let v6legacy = try M10Engine.encrypt(
+        data: payload, originalFilename: "story.txt", configuration: config,
+        formatVersion: 6, keyMode: .internalKey
+    )
+    expectEqual(try M10Format.parseLayout(v6legacy.data).archive.version, 6)
+    expectEqual(try M10Engine.decrypt(data: v6legacy.data, configuration: .base512Factory).payload, payload)
+
+    let v6scaled = try M10Engine.encrypt(
+        data: payload, originalFilename: "story.txt", configuration: config,
+        formatVersion: 6, keyMode: .internalKey, forceScaledNotches: true
+    )
+    expectEqual(try M10Format.parseLayout(v6scaled.data).archive.version, 6)
+    expectEqual(try M10Engine.decrypt(data: v6scaled.data, configuration: .base512Factory).payload, payload)
+    expect(v6legacy.data != v6scaled.data, "v6 1–2-notch ciphertext differs from v6 20-notch")
+
+    let params = try testKDF()
+    let pw7 = try M10Engine.encrypt(
+        data: payload, originalFilename: "story.txt", configuration: .base512Factory,
+        password: "pw", kdf: params
+    )
+    expect(pw7.data.starts(with: M10PasswordBinary.magicV4))
+    expectEqual(
+        try M10Engine.decrypt(data: pw7.data, configuration: .base512Factory, password: "pw").payload,
+        payload
+    )
+    let pw6 = try M10Engine.encrypt(
+        data: payload, originalFilename: "story.txt", configuration: .base512Factory,
+        password: "pw", kdf: params, formatVersion: 6
+    )
+    expect(pw6.data.starts(with: M10PasswordBinary.magicV3))
+    expectEqual(
+        try M10Engine.decrypt(data: pw6.data, configuration: .base512Factory, password: "pw").payload,
+        payload
+    )
+    print("OK base512 notch version identity")
+}
+
 func testKDF() throws -> M10KDFParams {
     var params = try M10KDFParams.freshSalt()
     params.memoryKiB = 32
@@ -804,7 +921,7 @@ func automaticPaddingHidesSizes() throws {
         password: password,
         kdf: params
     )
-    expect(result.data.starts(with: M10PasswordBinary.magicV3), "PW03")
+    expect(result.data.starts(with: M10PasswordBinary.magicV4), "PW04")
     let parsed = try M10PasswordBinary.parse(result.data)
     expectEqual(parsed.archive.payloadOriginalBytes, 0)
     expectEqual(parsed.archive.payloadStoredBytes, 0)
@@ -854,7 +971,7 @@ func automaticPaddingHidesSizes() throws {
         configuration: .alpha36Factory
     )
     let archive = try M10Format.decodeArchive(json.data)
-    expectEqual(archive.version, 6)
+    expectEqual(archive.version, 7)
     expectEqual(archive.payloadOriginalBytes, 0, "JSON v6 hides originalBytes")
     expectEqual(archive.crc32, 0, "JSON v6 hides crc")
     expectEqual(
@@ -1118,7 +1235,7 @@ func jsonV6RejectsUnaligned() throws {
         configuration: .alpha36Factory
     )
     var archive = try M10Format.decodeArchive(result.data)
-    expectEqual(archive.version, 6)
+    expectEqual(archive.version, 7)
     archive.ciphertext = "ABC"
     expectThrows({
         _ = try M10Format.decodeArchive(try M10Format.encodeArchive(archive))
@@ -1456,6 +1573,8 @@ do {
     try suiteSwitchDoesNotDuplicatePlugs()
     try nameFieldRoundTrip()
     try internalKeyRoundTrip()
+    try base512SuiteRoundTrip()
+    try base512NotchVersionIdentity()
 } catch {
     failures += 1
     print("FAIL thrown: \(error)")

@@ -7,15 +7,16 @@ import Foundation
 ///
 /// External-key / internal-key JSON:
 /// ```
-/// ENIGMAM10 v6
+/// ENIGMAM10 v7
 /// { compact JSON; Internal Key includes a codebook object }
 /// ```
-/// Password mode writes opaque `M10PW03` binary (`M10PW01` / `M10PW02` still decrypt).
+/// Password mode writes opaque `M10PW04` binary (`M10PW01`–`M10PW03` still decrypt).
 /// v1: legacy import. v2: required nonce/HMAC, parked-notch stepping.
 /// v3: carry-only stepping, unbiased positions, encrypt-then-MAC.
 /// v4: v3 HMAC also binds createdAt.
 /// v5: leftover decrypt (`M10PW02` public sizes + optional pad flags).
 /// v6: automatic 4 KiB/64 KiB padding; original/stored/CRC live inside the ciphertext.
+/// v7: Base-512 uses ~20 notches/rotor (~1/26 turnover). v6 Base-512 keeps 1–2 notches.
 public enum M10Format {
     public static let fileExtension = "enigmam10"
     public static let codebookExtension = "m10key"
@@ -26,15 +27,17 @@ public enum M10Format {
     public static let createdAtMacVersion = 4
     public static let independentMachinesVersion = 5
     public static let sealedPaddingVersion = 6
-    public static let currentVersion = 6
+    public static let scaledNotchesVersion = 7
+    public static let currentVersion = 7
     public static let maxPayloadBytes = 256 * 1024 * 1024
     public static let maxArchiveBytes = 512 * 1024 * 1024
     /// Files at or above this size use the disk pipeline and hybrid binary payload.
     public static let streamThresholdBytes = 1_048_576
     public static let maxStreamPayloadBytes = 2 * 1024 * 1024 * 1024
     public static let maxStreamArchiveBytes = 16 * 1024 * 1024 * 1024
-    /// Stem length so `stem.enigmam10` fits in a 255-byte APFS name.
-    public static let maxDiskBasenameLetters = 255 - 1 - fileExtension.count
+    /// APFS name limit is 255 UTF-8 bytes, including `.enigmam10`.
+    public static let maxDiskNameBytes = 255
+    public static let maxDiskBasenameLetters = maxDiskNameBytes - 1 - fileExtension.count
 
     public enum Kind: String, Codable, Sendable {
         case file
@@ -323,16 +326,15 @@ public enum M10Format {
     }
 
     public static func suggestedArchiveFilename(encryptedSymbols: String, suite: M10CipherSuite) -> String {
+        let stem: String
         switch suite {
         case .alpha36:
             let compact = encryptedSymbols
                 .filter { Alpha36Symbols.isValidSymbol($0) }
                 .uppercased()
-                .prefix(maxDiskBasenameLetters)
-            let basename = compact.isEmpty ? "ENCRYPTED" : String(compact)
-            return "\(basename).\(fileExtension)"
+            stem = compact.isEmpty ? "ENCRYPTED" : compact
         case .ascii:
-            return suggestedAsciiBasename(encryptedSymbols)
+            stem = asciiStem(encryptedSymbols)
         case .base256:
             let hexBody: String
             if let data = Base256Symbols.decodeFilenameCiphertext(encryptedSymbols) {
@@ -340,15 +342,36 @@ public enum M10Format {
             } else {
                 hexBody = Base256Symbols.hex(Base256Symbols.latin1Data(encryptedSymbols) ?? Data())
             }
-            let basename = hexBody.isEmpty ? "ENCRYPTED" : String(hexBody.prefix(maxDiskBasenameLetters))
-            return "\(basename).\(fileExtension)"
+            stem = hexBody.isEmpty ? "ENCRYPTED" : hexBody
+        case .base512:
+            let compact = encryptedSymbols.filter { Base512Symbols.isValidSymbol($0) }
+            stem = compact.isEmpty ? "ENCRYPTED" : compact
         }
+        return fitDiskFilename(stem)
     }
 
     public static func suggestedPlaintextArchiveFilename(_ filename: String) -> String {
         let sanitized = sanitizedFilename(filename)
         let basename = sanitized.isEmpty ? "file" : sanitized
-        return "\(basename).\(fileExtension)"
+        return fitDiskFilename(basename)
+    }
+
+    /// Trim complete characters so `stem.enigmam10` fits in 255 UTF-8 bytes.
+    public static func fitDiskFilename(_ stem: String) -> String {
+        let suffix = ".\(fileExtension)"
+        let budget = maxDiskNameBytes - suffix.utf8.count
+        guard budget > 0 else { return "ENCRYPTED.\(fileExtension)" }
+        if stem.utf8.count <= budget {
+            return stem.isEmpty ? "ENCRYPTED.\(fileExtension)" : stem + suffix
+        }
+        var result = ""
+        result.reserveCapacity(budget)
+        for character in stem {
+            let next = result + String(character)
+            if next.utf8.count > budget { break }
+            result = next
+        }
+        return (result.isEmpty ? "ENCRYPTED" : result) + suffix
     }
 
     public static func sanitizedFilename(_ name: String) -> String {
@@ -366,16 +389,16 @@ public enum M10Format {
         "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
     ]
 
-    private static func suggestedAsciiBasename(_ encrypted: String) -> String {
-        let compact = encrypted.filter { Ascii94Symbols.isValidSymbol($0) }.prefix(maxDiskBasenameLetters)
-        let safe = String(compact).unicodeScalars.map { scalar -> Character in
+    private static func asciiStem(_ encrypted: String) -> String {
+        let compact = encrypted.filter { Ascii94Symbols.isValidSymbol($0) }
+        let safe = compact.unicodeScalars.map { scalar -> Character in
             windowsUnsafe.contains(scalar) ? "_" : Character(scalar)
         }
         var basename = safe.isEmpty ? "ENCRYPTED" : String(safe)
         if windowsReserved.contains(basename.uppercased()) {
             basename = "_" + basename
         }
-        return "\(basename).\(fileExtension)"
+        return basename
     }
 
     /// True when a JSON object (not ciphertext string values) has a machine-settings key.

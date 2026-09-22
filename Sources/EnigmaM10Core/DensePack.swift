@@ -26,6 +26,8 @@ public enum DensePack {
             return (dense94Encode(wire), info)
         case .base256:
             return (Base256Symbols.latin1String(wire), info)
+        case .base512:
+            return (Base512Symbols.encode(wire), info)
         }
     }
 
@@ -42,6 +44,8 @@ public enum DensePack {
             } else {
                 wire = nil
             }
+        case .base512:
+            wire = Base512Symbols.decode(symbols, storedLength: info.storedBytes)
         }
         guard let wire else { throw M10Error.corruptPayload }
         return try decompressWire(wire, info: info)
@@ -115,6 +119,10 @@ public enum DensePack {
                 try FileManager.default.removeItem(at: output)
             }
             try FileManager.default.copyItem(at: url, to: output)
+            return
+        }
+        if suite == .base512 {
+            try encodeFile512(at: url, to: output)
             return
         }
         let storedBytes = try FileIO.byteCount(at: url)
@@ -192,6 +200,10 @@ public enum DensePack {
             }
             return
         }
+        if suite == .base512 {
+            try decodeFile512(at: url, storedLength: storedLength, to: dest)
+            return
+        }
 
         let symbolCount = suite == .alpha36
             ? Alpha36Symbols.denseBlockSymbols
@@ -241,6 +253,21 @@ public enum DensePack {
         guard written == storedLength, symbolsRead == expectedSymbols else {
             throw M10Error.corruptPayload
         }
+    }
+
+    private static func encodeFile512(at url: URL, to output: URL) throws {
+        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+        let dest = try FileIO.createEmptyFile(at: output)
+        defer { try? dest.close() }
+        dest.write(Data(Base512Symbols.encode(data).utf8))
+    }
+
+    private static func decodeFile512(at url: URL, storedLength: Int, to dest: FileHandle) throws {
+        let text = String(decoding: try Data(contentsOf: url, options: [.mappedIfSafe]), as: UTF8.self)
+        guard let wire = Base512Symbols.decode(text, storedLength: storedLength) else {
+            throw M10Error.corruptPayload
+        }
+        dest.write(wire)
     }
 
     // MARK: - Compression

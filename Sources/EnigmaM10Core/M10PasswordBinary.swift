@@ -4,14 +4,15 @@ import CryptoKit
 /// Opaque password-mode container. External-key archives stay JSON `ENIGMAM10`.
 ///
 /// ```
-/// M10PW03 | flags | argon2 | nonce | name | tag | ciphertext
+/// M10PW04 | flags | argon2 | nonce | name | tag | ciphertext
 /// ```
-/// Ciphertext is Enigma(inner ‖ pad). `M10PW01` / `M10PW02` still decrypt.
+/// Ciphertext is Enigma(inner ‖ pad). `M10PW01`–`M10PW03` still decrypt.
 public enum M10PasswordBinary {
     public static let magicV1 = Data("M10PW01".utf8)
     public static let magicV2 = Data("M10PW02".utf8)
     public static let magicV3 = Data("M10PW03".utf8)
-    public static let magic = magicV3
+    public static let magicV4 = Data("M10PW04".utf8)
+    public static let magic = magicV4
     static let tagLength = 32
     static let nonceLength = 16
 
@@ -30,13 +31,14 @@ public enum M10PasswordBinary {
     }
 
     public static func matches(_ data: Data) -> Bool {
-        data.starts(with: magicV1) || data.starts(with: magicV2) || data.starts(with: magicV3)
+        data.starts(with: magicV1) || data.starts(with: magicV2)
+            || data.starts(with: magicV3) || data.starts(with: magicV4)
     }
 
     public static func matches(at url: URL) -> Bool {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
         defer { try? handle.close() }
-        let head = (try? handle.read(upToCount: magicV3.count)) ?? Data()
+        let head = (try? handle.read(upToCount: magicV4.count)) ?? Data()
         return matches(head)
     }
 
@@ -152,10 +154,12 @@ public enum M10PasswordBinary {
         func need(_ n: Int) throws {
             guard cursor + n <= data.count else { throw M10Error.invalidFormat }
         }
-        try need(magicV3.count)
-        let magicSlice = data[cursor..<(cursor + magicV3.count)]
+        try need(magicV4.count)
+        let magicSlice = data[cursor..<(cursor + magicV4.count)]
         let formatVersion: Int
-        if magicSlice.elementsEqual(magicV3) {
+        if magicSlice.elementsEqual(magicV4) {
+            formatVersion = M10Format.scaledNotchesVersion
+        } else if magicSlice.elementsEqual(magicV3) {
             formatVersion = M10Format.sealedPaddingVersion
         } else if magicSlice.elementsEqual(magicV2) {
             formatVersion = M10Format.independentMachinesVersion
@@ -164,7 +168,7 @@ public enum M10PasswordBinary {
         } else {
             throw M10Error.invalidFormat
         }
-        cursor += magicV3.count
+        cursor += magicV4.count
         try need(1)
         let flags = data[cursor]
         cursor += 1
@@ -333,7 +337,7 @@ public enum M10PasswordBinary {
         switch suite {
         case .base256:
             return Base256Symbols.encodeFilenameCiphertext(raw)
-        case .alpha36, .ascii:
+        case .alpha36, .ascii, .base512:
             return String(decoding: raw, as: UTF8.self)
         }
     }
@@ -345,7 +349,7 @@ public enum M10PasswordBinary {
         switch suite {
         case .base256:
             return (Base256Symbols.decodeFilenameCiphertext(field) ?? Data(), true)
-        case .alpha36, .ascii:
+        case .alpha36, .ascii, .base512:
             return (Data(field.utf8), true)
         }
     }
@@ -412,6 +416,7 @@ public enum M10PasswordBinary {
     }
 
     private static func magic(for formatVersion: Int) -> Data {
+        if formatVersion >= M10Format.scaledNotchesVersion { return magicV4 }
         if formatVersion >= M10Format.sealedPaddingVersion { return magicV3 }
         if formatVersion >= M10Format.independentMachinesVersion { return magicV2 }
         return magicV1
@@ -426,6 +431,7 @@ public enum M10PasswordBinary {
         case .alpha36: return 0
         case .ascii: return 1
         case .base256: return 2
+        case .base512: return 3
         }
     }
 
@@ -434,6 +440,7 @@ public enum M10PasswordBinary {
         case 0: return .alpha36
         case 1: return .ascii
         case 2: return .base256
+        case 3: return .base512
         default: throw M10Error.invalidFormat
         }
     }

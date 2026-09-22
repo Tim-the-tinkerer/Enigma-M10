@@ -67,14 +67,18 @@ public enum PairCodec {
         case .alpha36: return encodeAlpha36(data)
         case .ascii: return encodeAscii94(data)
         case .base256: return Base256Symbols.latin1String(data)
+        case .base512: return Base512Symbols.encode(data)
         }
     }
 
-    public static func decode(_ symbols: String, suite: M10CipherSuite) -> Data? {
+    public static func decode(_ symbols: String, suite: M10CipherSuite, storedLength: Int? = nil) -> Data? {
         switch suite {
         case .alpha36: return decodeAlpha36(symbols)
         case .ascii: return decodeAscii94(symbols)
         case .base256: return Base256Symbols.latin1Data(symbols)
+        case .base512:
+            guard let storedLength else { return nil }
+            return Base512Symbols.decode(symbols, storedLength: storedLength)
         }
     }
 }
